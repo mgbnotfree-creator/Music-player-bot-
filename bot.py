@@ -14,13 +14,14 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
 
 
 # -------------------------------------------------------------
-# Web Server for Render Keep-Alive
+# Web Server for Render
 # -------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
@@ -28,7 +29,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Bot Active & Working Perfect!")
+        self.wfile.write(b"Music Downloader Bot Active!")
 
     def log_message(self, format, *args):
         return
@@ -52,12 +53,45 @@ def send_message(chat_id, text):
         "disable_web_page_preview": True,
     }
     try:
-        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+        res = requests.post(
+            url, json=payload, headers=HEADERS, timeout=10
+        ).json()
+        if res.get("ok"):
+            return res.get("result", {}).get("message_id")
     except Exception as e:
         print(f"Send Msg Error: {e}")
+    return None
 
 
-def upload_audio_file(chat_id, filepath, title, performer):
+def edit_message(chat_id, message_id, text):
+    if not message_id:
+        return
+    url = f"{BASE_URL}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+    except Exception as e:
+        print(f"Edit Msg Error: {e}")
+
+
+def delete_message(chat_id, message_id):
+    if not message_id:
+        return
+    url = f"{BASE_URL}/deleteMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    try:
+        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+    except Exception:
+        pass
+
+
+def upload_audio_stream(chat_id, audio_bytes, filename, title, performer):
     url = f"{BASE_URL}/sendAudio"
     payload = {
         "chat_id": chat_id,
@@ -67,12 +101,11 @@ def upload_audio_file(chat_id, filepath, title, performer):
         "parse_mode": "HTML",
     }
     try:
-        with open(filepath, "rb") as f:
-            files = {"audio": (os.path.basename(filepath), f, "audio/mpeg")}
-            res = requests.post(
-                url, data=payload, files=files, headers=HEADERS, timeout=120
-            )
-            return res.json()
+        files = {"audio": (filename, audio_bytes, "audio/mpeg")}
+        res = requests.post(
+            url, data=payload, files=files, headers=HEADERS, timeout=120
+        )
+        return res.json()
     except Exception as e:
         print(f"Audio Upload Error: {e}")
         return None
@@ -91,89 +124,139 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Fast Audio Downloader (yt-dlp Engine)
+# Dual Engine (Saavn High Quality API + Direct YT Direct Stream)
 # -------------------------------------------------------------
-def download_audio_yt_dlp(search_query):
-    # Determine search strategy
-    if search_query.startswith("http://") or search_query.startswith(
-        "https://"
-    ):
-        target = search_query
-    else:
-        clean_text = re.sub(
-            r"\(.*?\)|\[.*?\]", "", search_query
-        ).strip()  # Clean query
-        target = f"ytsearch1:{clean_text} song"
+def fetch_audio_bytes(query_text):
+    clean_query = re.sub(
+        r"https?://\S+|\(.*?\)|\[.*?\]|official|video|lyrical",
+        "",
+        query_text,
+        flags=re.I,
+    ).strip()
+    if not clean_query:
+        clean_query = "Phir Mohabbat"
 
-    out_file = f"song_{int(time.time())}.mp3"
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": out_file,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        ),
-    }
-
+    # ENGINE 1: Saavn API (Fastest & Best Quality Audio File)
     try:
+        api_url = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_query)}"
+        res = requests.get(api_url, headers=HEADERS, timeout=8)
+        if res.status_code == 200:
+            results = res.json().get("data", {}).get("results", [])
+            if results:
+                song = results[0]
+                title = (
+                    song.get("name", "Song")
+                    .replace("&quot;", "")
+                    .replace("&#039;", "")
+                    .replace("&amp;", "&")
+                )
+                artists = song.get("artists", {}).get("primary", [])
+                performer = artists[0].get("name") if artists else "Music Bot"
+
+                dl_urls = song.get("downloadUrl", [])
+                if dl_urls:
+                    target_url = dl_urls[-1].get(
+                        "url"
+                    )  # Highest quality audio
+                    audio_res = requests.get(
+                        target_url, headers=HEADERS, timeout=20
+                    )
+                    if (
+                        audio_res.status_code == 200
+                        and len(audio_res.content) > 200000
+                    ):
+                        return (
+                            audio_res.content,
+                            f"{title}.mp3",
+                            title,
+                            performer,
+                        )
+    except Exception as e:
+        print(f"Saavn Engine Error: {e}")
+
+    # ENGINE 2: Direct YT Stream without FFmpeg Dependency
+    try:
+        target = (
+            query_text
+            if query_text.startswith("http")
+            else f"ytsearch1:{clean_query} song"
+        )
+
+        ydl_opts = {
+            "format": "m4a/bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            ),
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target, download=True)
+            info = ydl.extract_info(target, download=False)
             if "entries" in info and info["entries"]:
                 info = info["entries"][0]
 
+            direct_stream_url = info.get("url")
             title = info.get("title", "Music Song")
             performer = info.get("uploader", "Music Bot")
 
-            if os.path.exists(out_file):
-                return out_file, title, performer
+            if direct_stream_url:
+                audio_res = requests.get(
+                    direct_stream_url, headers=HEADERS, timeout=25
+                )
+                if (
+                    audio_res.status_code == 200
+                    and len(audio_res.content) > 200000
+                ):
+                    return audio_res.content, f"{title}.m4a", title, performer
     except Exception as e:
-        print(f"yt-dlp Download Failed: {e}")
+        print(f"YT Direct Engine Error: {e}")
 
-    return None, None, None
+    return None, None, None, None
 
 
 # -------------------------------------------------------------
-# Worker Thread Logic
+# Processing Request Logic
 # -------------------------------------------------------------
 def process_song_request(chat_id, user_text):
-    send_message(
+    msg_id = send_message(
         chat_id,
-        f"🔎 <b>Searching & Downloading MP3:</b> <i>{user_text[:25]}</i>\n⏳ <i>Bas 5-10 seconds wait karein...</i>",
+        f"🔎 <b>Searching & Processing MP3:</b> <i>{user_text[:25]}</i>\n⏳ <i>5-10 seconds wait karein...</i>",
     )
 
-    file_path, title, performer = download_audio_yt_dlp(user_text)
+    audio_bytes, filename, title, performer = fetch_audio_bytes(user_text)
 
-    if file_path and os.path.exists(file_path):
-        send_message(
-            chat_id, "⬆️ <b>MP3 Audio file Telegram par upload ho rahi hai...</b>"
+    if audio_bytes:
+        edit_message(
+            chat_id,
+            msg_id,
+            "⬆️ <b>MP3 Track Telegram par upload ho raha hai...</b>",
         )
 
-        res = upload_audio_file(chat_id, file_path, title, performer)
+        res = upload_audio_stream(
+            chat_id, audio_bytes, filename, title, performer
+        )
 
-        # Cleanup local downloaded file
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-
-        if not res or not res.get("ok"):
-            send_message(
+        if res and res.get("ok"):
+            delete_message(chat_id, msg_id)
+        else:
+            edit_message(
                 chat_id,
-                "❌ <b>Upload Error!</b> Telegram server par file upload nahi ho payi.",
+                msg_id,
+                "❌ <b>Upload Error!</b> File size zyaada hone ki wajah se upload nahi ho paya.",
             )
     else:
-        send_message(
+        edit_message(
             chat_id,
+            msg_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Kripya kisi specific song ka sahi naam ya YouTube link bhejein.",
+            "Kripya kisi specific song ka direct naam likhein (Jaise: <code>Kesariya</code> ya <code>Phir Mohabbat</code>).",
         )
 
 
 # -------------------------------------------------------------
-# Message Router & Polling
+# Main Polling Loop
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
@@ -192,7 +275,7 @@ def handle_message(chat_id, text):
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("Clean Polling Bot Engine Active...")
+    print("Dual Direct Stream Engine Active...")
     offset = None
 
     while True:
