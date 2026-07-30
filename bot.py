@@ -1,139 +1,47 @@
-import os
-import re
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import requests
-import yt_dlp
-
-BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
-BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-
-class DummyServerHandler(BaseHTTPRequestHandler):
-
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"All-in-One Downloader Bot is Running!")
-
-    def log_message(self, format, *args):
-        return
-
-
-def run_dummy_server():
-    httpd = HTTPServer(("", 8080), DummyServerHandler)
-    httpd.serve_forever()
-
-
-def send_message(chat_id, text):
-    url = f"{BASE_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-def send_video_file(chat_id, file_path, title):
-    url = f"{BASE_URL}/sendVideo"
-    try:
-        with open(file_path, "rb") as video:
-            files = {"video": video}
-            data = {
-                "chat_id": chat_id,
-                "caption": f"🎬 <b>{title}</b>\n\nDownloaded via Media Downloader",
-                "parse_mode": "HTML",
-            }
-            requests.post(url, data=data, files=files)
-    except Exception as e:
-        print(f"Error sending video: {e}")
-
-
-def get_updates(offset=None):
-    url = f"{BASE_URL}/getUpdates"
-    params = {"timeout": 30, "offset": offset}
-    try:
-        res = requests.get(url, params=params, timeout=35)
-        if res.status_code == 200:
-            return res.json()
-    except Exception as e:
-        print(f"Update error: {e}")
-    return None
-
-
 def download_media(chat_id, link_or_query):
-    send_message(chat_id, "⏳ <b>Downloading Video/Audio...</b>")
+    send_message(chat_id, "⏳ <b>Downloading Audio/Video (Fast Mode)...</b>")
 
+    # YouTube videos ko small size (360p) me download karega taaki 50MB limit cross na ho
     ydl_opts = {
-        "format": "best[ext=mp4]/best",
+        "format": "best[filesize<45M]/bestvideo[height<=360]+bestaudio/best[height<=360]/best",
         "outtmpl": "downloaded_media.%(ext)s",
         "quiet": True,
-        "max_filesize": 48 * 1024 * 1024,  # Under 50MB limit for Telegram
+        "no_warnings": True,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(link_or_query, download=True)
-            title = info.get("title", "Downloaded Video")
+            title = info.get("title", "Downloaded Media")
 
-            filename = "downloaded_media.mp4"
-            if not os.path.exists(filename):
-                for f in os.listdir("."):
-                    if f.startswith("downloaded_media."):
-                        filename = f
-                        break
+            filename = None
+            for f in os.listdir("."):
+                if f.startswith("downloaded_media."):
+                    filename = f
+                    break
 
-            if os.path.exists(filename):
-                send_message(chat_id, "⬆️ <b>Uploading to Telegram...</b>")
-                send_video_file(chat_id, filename, title)
-                os.remove(filename)
+            if filename and os.path.exists(filename):
+                send_message(
+                    chat_id, "⬆️ <b>Telegram par upload ho raha hai...</b>"
+                )
+
+                # Send file as Video or Document based on format
+                if filename.endswith(".mp4") or filename.endswith(".mkv"):
+                    send_video_file(chat_id, filename, title)
+                else:
+                    send_audio_file(chat_id, filename, title)
+
+                os.remove(filename)  # Delete temp file
             else:
-                send_message(chat_id, "❌ Download failed.")
+                send_message(
+                    chat_id,
+                    "❌ File process nahi ho saki. Dusra link try karein.",
+                )
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Download Error: {e}")
         send_message(
             chat_id,
-            "❌ Media process nahi ho paya. File size 50MB se badi ho sakti hai ya link invalid hai.",
-        )
-
-
-def handle_message(chat_id, text):
-    if text == "/start":
-        send_message(
-            chat_id,
-            "👋 <b>Welcome to Media Downloader Bot!</b>\n\n"
-            "YouTube, Instagram Reels, ya kisi bhi supported URL ka link bhejein, main direct video bhej dunga!",
-        )
-        return
-
-    if text.startswith("http://") or text.startswith("https://"):
-        threading.Thread(
-            target=download_media, args=(chat_id, text)
-        ).start()
-    else:
-        send_message(chat_id, "⚠️ Please ek valid **Video URL** bhejein!")
-
-
-def main():
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Bot started...")
-    offset = None
-
-    while True:
-        updates = get_updates(offset)
-        if updates and updates.get("ok"):
-            for update in updates.get("result", []):
-                offset = update["update_id"] + 1
-                if "message" in update and "text" in update["message"]:
-                    handle_message(
-                        update["message"]["chat"]["id"],
-                        update["message"]["text"].strip(),
+            "❌ <b>Error:</b> Video 50MB se badi hai ya YouTube block kar raha hai.",
                     )
-        time.sleep(1)
-
-
-if __name__ == "__main__":
-    main()
-    
+            
