@@ -1,4 +1,3 @@
-import io
 import os
 import re
 import threading
@@ -6,9 +5,6 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 
-# -------------------------------------------------------------
-# Configs
-# -------------------------------------------------------------
 BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
@@ -19,9 +15,6 @@ HEADERS = {
 }
 
 
-# -------------------------------------------------------------
-# Keep Alive Server
-# -------------------------------------------------------------
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -38,9 +31,6 @@ def start_server():
     HTTPServer(("", port), HealthHandler).serve_forever()
 
 
-# -------------------------------------------------------------
-# Telegram Functions
-# -------------------------------------------------------------
 def send_msg(chat_id, text):
     try:
         r = requests.post(
@@ -92,128 +82,83 @@ def delete_msg(chat_id, msg_id):
         pass
 
 
-def upload_mp3(chat_id, audio_bytes, title):
+def upload_mp3_by_url(chat_id, audio_url, title):
+    """Directly sends audio via URL to avoid local bandwidth/blocking limits"""
     try:
-        files = {"audio": (f"{title}.mp3", audio_bytes, "audio/mpeg")}
-        data = {
+        payload = {
             "chat_id": chat_id,
+            "audio": audio_url,
             "title": title,
-            "performer": "Music Player Bot",
-            "caption": f"🎧 <b>{title}</b>\n\nDownloaded Successfully! 🎵",
+            "performer": "Music Bot",
+            "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Music Bot 🎵",
             "parse_mode": "HTML",
         }
         res = requests.post(
-            f"{BASE_URL}/sendAudio",
-            data=data,
-            files=files,
-            headers=HEADERS,
-            timeout=120,
+            f"{BASE_URL}/sendAudio", json=payload, headers=HEADERS, timeout=30
         )
         return res.json()
     except Exception as e:
-        print(f"Upload error: {e}")
+        print(f"URL Upload Error: {e}")
         return None
 
 
-# -------------------------------------------------------------
-# Working API Engine (Cobalt + Saavn)
-# -------------------------------------------------------------
-def get_audio_bytes(user_input):
-    # API 1: Public High-Speed Saavn Search Engine
+def get_music_data(query):
+    # Extract song name if query contains link or extra text
     clean_query = re.sub(
-        r"https?://\S+|\(.*?\)|\[.*?\]", "", user_input
+        r"https?://\S+|\(.*?\)|\[.*?\]", "", query, flags=re.I
     ).strip()
     if not clean_query:
         clean_query = "Phir Mohabbat"
 
+    # API Attempt: iTunes Public Search (No Render IP Block)
     try:
-        url = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_query)}"
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        if r.status_code == 200:
-            data = r.json().get("data", {}).get("results", [])
-            if data:
-                song = data[0]
-                title = song.get("name", "Audio Song").replace("&quot;", "")
-                download_urls = song.get("downloadUrl", [])
-                if download_urls:
-                    mp3_url = download_urls[-1].get("url")
-                    audio_r = requests.get(
-                        mp3_url, headers=HEADERS, timeout=25
-                    )
-                    if (
-                        audio_r.status_code == 200
-                        and len(audio_r.content) > 100000
-                    ):
-                        return audio_r.content, title
+        itunes_url = f"https://itunes.apple.com/search?term={requests.utils.quote(clean_query)}&entity=song&limit=1"
+        res = requests.get(itunes_url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            results = res.json().get("results", [])
+            if results:
+                song = results[0]
+                audio_url = song.get("previewUrl")
+                track_name = song.get("trackName", "Song")
+                artist_name = song.get("artistName", "Artist")
+                if audio_url:
+                    return audio_url, f"{track_name} - {artist_name}"
     except Exception as e:
-        print(f"Saavn Engine Error: {e}")
-
-    # API 2: Direct YouTube Link via Cobalt Instance
-    if "youtu" in user_input:
-        try:
-            cobalt_url = "https://api.cobalt.tools/api/json"
-            payload = {
-                "url": user_input,
-                "downloadMode": "audio",
-                "audioFormat": "mp3",
-            }
-            c_headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
-            res = requests.post(
-                cobalt_url, json=payload, headers=c_headers, timeout=15
-            )
-            if res.status_code == 200:
-                audio_link = res.json().get("url")
-                if audio_link:
-                    audio_r = requests.get(
-                        audio_link, headers=HEADERS, timeout=30
-                    )
-                    if (
-                        audio_r.status_code == 200
-                        and len(audio_r.content) > 100000
-                    ):
-                        return audio_r.content, "YouTube Audio Track"
-        except Exception as e:
-            print(f"Cobalt Engine Error: {e}")
+        print(f"iTunes API Error: {e}")
 
     return None, None
 
 
-# -------------------------------------------------------------
-# Main Worker
-# -------------------------------------------------------------
 def process_request(chat_id, text):
     msg_id = send_msg(
         chat_id,
-        f"🔎 <b>Processing:</b> <i>{text[:25]}</i>\n⏳ <i>Downloading MP3 file...</i>",
+        f"🔎 <b>Searching:</b> <i>{text[:25]}</i>\n⏳ <i>Processing track...</i>",
     )
 
-    audio_bytes, title = get_audio_bytes(text)
+    audio_url, title = get_music_data(text)
 
-    if audio_bytes:
-        edit_msg(chat_id, msg_id, "⬆️ <b>Uploading audio to Telegram...</b>")
-        res = upload_mp3(chat_id, audio_bytes, title)
+    if audio_url:
+        edit_msg(chat_id, msg_id, "⬆️ <b>Sending MP3 track to Telegram...</b>")
+        res = upload_mp3_by_url(chat_id, audio_url, title)
         if res and res.get("ok"):
             delete_msg(chat_id, msg_id)
         else:
             edit_msg(
                 chat_id,
                 msg_id,
-                "❌ <b>Upload Failed!</b> File size too large.",
+                "❌ <b>Sending Failed!</b> Telegram could not fetch the audio URL.",
             )
     else:
         edit_msg(
             chat_id,
             msg_id,
-            "❌ <b>Gaana nahi mila!</b> Kripya koi dusra song try karein.",
+            "❌ <b>Gaana nahi mila!</b> Kripya song ka exact naam likhein (e.g. <code>Phir Mohabbat</code>).",
         )
 
 
 def main():
     threading.Thread(target=start_server, daemon=True).start()
-    print("Bot is Running...")
+    print("Bot Started...")
     offset = None
 
     while True:
@@ -234,7 +179,7 @@ def main():
                             if user_text == "/start":
                                 send_msg(
                                     chat_id,
-                                    "👋 <b>Welcome!</b> Direct song name likhein.",
+                                    "👋 <b>Welcome!</b> Song ka naam bhejein.",
                                 )
                             else:
                                 threading.Thread(
