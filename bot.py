@@ -4,7 +4,6 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
-import yt_dlp
 
 # -------------------------------------------------------------
 # Configuration
@@ -14,7 +13,7 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
 # -------------------------------------------------------------
-# Dummy Web Server (Render App Ko Active Rakhne Ke Liye)
+# Dummy Web Server (Render Active Keep)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -22,7 +21,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"YouTube Downloader Bot Active!")
+        self.wfile.write(b"YouTube Media Downloader Active!")
 
     def log_message(self, format, *args):
         return
@@ -38,42 +37,31 @@ def run_dummy_server():
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
     try:
         requests.post(url, json=payload)
     except Exception as e:
         print(f"Error sending message: {e}")
 
 
-def send_video_file(chat_id, file_path, title):
+def send_video(chat_id, video_url, title="Downloaded Video"):
     url = f"{BASE_URL}/sendVideo"
+    payload = {
+        "chat_id": chat_id,
+        "video": video_url,
+        "caption": f"🎬 <b>{title}</b>\n\nDownloaded via Music Bot 🚀",
+        "parse_mode": "HTML",
+    }
     try:
-        with open(file_path, "rb") as video:
-            files = {"video": video}
-            data = {
-                "chat_id": chat_id,
-                "caption": f"🎬 <b>{title}</b>\n\nDownloaded via Bot 🚀",
-                "parse_mode": "HTML",
-            }
-            requests.post(url, data=data, files=files)
+        return requests.post(url, json=payload, timeout=25).json()
     except Exception as e:
         print(f"Error sending video: {e}")
-
-
-def send_audio_file(chat_id, file_path, title):
-    url = f"{BASE_URL}/sendAudio"
-    try:
-        with open(file_path, "rb") as audio:
-            files = {"audio": audio}
-            data = {
-                "chat_id": chat_id,
-                "title": title,
-                "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Bot 🎶",
-                "parse_mode": "HTML",
-            }
-            requests.post(url, data=data, files=files)
-    except Exception as e:
-        print(f"Error sending audio: {e}")
+        return None
 
 
 def get_updates(offset=None):
@@ -89,71 +77,90 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Downloader Logic (360p Compressed Format for <50MB Limit)
+# Fast Media Extractor (Cobalt API)
 # -------------------------------------------------------------
-def download_media(chat_id, link_or_query):
-    send_message(chat_id, "⏳ <b>Downloading Media (Fast Mode)...</b>")
-
-    ydl_opts = {
-        "format": "best[filesize<45M]/bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-        "outtmpl": "downloaded_media.%(ext)s",
-        "quiet": True,
-        "no_warnings": True,
+def get_media_url_cobalt(youtube_url):
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "url": youtube_url,
+        "vQuality": "360",  # Low size format for fast Telegram send
+        "isAudioOnly": False,
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link_or_query, download=True)
-            title = info.get("title", "Downloaded File")
-
-            filename = None
-            for f in os.listdir("."):
-                if f.startswith("downloaded_media."):
-                    filename = f
-                    break
-
-            if filename and os.path.exists(filename):
-                send_message(
-                    chat_id, "⬆️ <b>Telegram par upload ho raha hai...</b>"
-                )
-
-                if filename.endswith(".mp4") or filename.endswith(".mkv"):
-                    send_video_file(chat_id, filename, title)
-                else:
-                    send_audio_file(chat_id, filename, title)
-
-                os.remove(filename)  # Cleanup temp file
-            else:
-                send_message(chat_id, "❌ Download file process nahi ho saki.")
-
+        res = requests.post(api_url, json=payload, headers=headers, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("status") in ["stream", "picker", "redirect"]:
+                return data.get("url")
     except Exception as e:
-        print(f"Download Error: {e}")
+        print(f"Cobalt Main API Error: {e}")
+
+    # Fallback Cobalt Instance
+    try:
+        alt_api = "https://cobalt.qil.dev/api/json"
+        res = requests.post(alt_api, json=payload, headers=headers, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("url"):
+                return data.get("url")
+    except Exception as e:
+        print(f"Cobalt Fallback Error: {e}")
+
+    return None
+
+
+# -------------------------------------------------------------
+# Message Processor
+# -------------------------------------------------------------
+def download_media_process(chat_id, youtube_url):
+    send_message(chat_id, "⏳ <b>Processing Media (Fast Server)...</b>")
+
+    direct_url = get_media_url_cobalt(youtube_url)
+
+    if direct_url:
         send_message(
-            chat_id, "❌ Error: Link process karne me samasya aayi."
+            chat_id, "⬇️ <b>Telegram par video send kar rahe hain...</b>"
+        )
+        result = send_video(chat_id, direct_url, title="YouTube Media")
+
+        # If direct video upload fails on Telegram
+        if not result or not result.get("ok"):
+            send_message(
+                chat_id,
+                f"🎬 <b>Direct Stream / Download Link:</b>\n\n"
+                f"👉 <a href='{direct_url}'>Click Here to Download Media</a>\n\n"
+                f"💡 <i>Tip: Telegram limit ki wajah se link par click karke direct download karein!</i>",
+            )
+    else:
+        send_message(
+            chat_id,
+            "❌ <b>Error:</b> Video extract nahi ho payi. Kuch der baad try karein.",
         )
 
 
-# -------------------------------------------------------------
-# Message Handling
-# -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to Video & Song Downloader Bot!</b>\n\n"
-            "Koi bhi YouTube Video/Song link yahan paste karein!",
+            "👋 <b>Welcome to Fast Media Downloader Bot!</b>\n\n"
+            "Koi bhi YouTube, Instagram, ya Song Link yahan paste karein!",
         )
         return
 
-    if text.startswith("http://") or text.startswith("https://"):
-        threading.Thread(
-            target=download_media, args=(chat_id, text)
-        ).start()
-    else:
-        send_message(
-            chat_id,
-            "⚠️ Please ek valid URL (YouTube/Song Link) bhejein!",
-        )
+    if "youtube.com" in text or "youtu.be" in text or "http" in text:
+        urls = re.findall(r"(https?://[^\s]+)", text)
+        if urls:
+            threading.Thread(
+                target=download_media_process, args=(chat_id, urls[0])
+            ).start()
+            return
+
+    send_message(chat_id, "⚠️ Please ek valid **Video URL** bhejein!")
 
 
 # -------------------------------------------------------------
@@ -161,7 +168,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Bot is running successfully...")
+    print("Bot started...")
     offset = None
 
     while True:
@@ -179,4 +186,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
