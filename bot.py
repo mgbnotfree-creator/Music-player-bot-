@@ -1,4 +1,4 @@
-import json
+import os
 import re
 import threading
 import time
@@ -9,14 +9,11 @@ import requests
 # Configuration
 # -------------------------------------------------------------
 BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
-API_KEY = "458a3845d8msh0e188bebe00200ep1933e2jsnc7b9327ac320"
-API_HOST = "pocket-fm-api1.p.rapidapi.com"
-
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
 # -------------------------------------------------------------
-# Dummy Server (Render Server Keep Alive)
+# Dummy Server (Render Server Active Rakhne Ke Liye)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -24,7 +21,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Pocket FM Bot Server Active!")
+        self.wfile.write(b"TeraBox Downloader Bot is Running Live!")
 
     def log_message(self, format, *args):
         return
@@ -36,7 +33,7 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram Functions
+# Telegram API Functions
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -47,17 +44,19 @@ def send_message(chat_id, text):
         print(f"Error sending message: {e}")
 
 
-def send_audio(chat_id, audio_url, title="Pocket FM Episode"):
-    url = f"{BASE_URL}/sendAudio"
+def send_video(chat_id, video_url, title="TeraBox Video"):
+    url = f"{BASE_URL}/sendVideo"
     payload = {
         "chat_id": chat_id,
-        "audio": audio_url,
-        "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Pocket FM Bot",
+        "video": video_url,
+        "caption": f"🎬 <b>{title}</b>\n\nDownloaded via TeraBox Bot 🚀",
+        "parse_mode": "HTML",
     }
     try:
-        return requests.post(url, json=payload).json()
+        res = requests.post(url, json=payload).json()
+        return res
     except Exception as e:
-        print(f"Error sending audio: {e}")
+        print(f"Error sending video: {e}")
         return None
 
 
@@ -74,138 +73,96 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# API Call Functions
+# TeraBox Link Extractor API
 # -------------------------------------------------------------
-def fetch_player_audio(show_id):
-    """Fetch Audio Stream from Player Endpoint"""
-    url = "https://pocket-fm-api1.p.rapidapi.com/player"
-    payload = {"id": show_id}
-    headers = {
-        "x-rapidapi-key": API_KEY,
-        "x-rapidapi-host": API_HOST,
-        "Content-Type": "application/json",
-    }
+def get_terabox_direct_link(terabox_url):
+    """Free Open Source TeraBox API Extractor"""
+    api_url = f"https://terabox.app.link-api.workers.dev/?url={terabox_url}"
 
     try:
-        response = requests.post(
-            url, json=payload, headers=headers, timeout=10
-        )
+        response = requests.get(api_url, timeout=15)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            if "download_link" in data or "url" in data:
+                return {
+                    "download_url": data.get("download_link")
+                    or data.get("url"),
+                    "title": data.get("file_name", "TeraBox File"),
+                }
     except Exception as e:
-        print(f"Player API Error: {e}")
-    return None
+        print(f"TeraBox Extractor Error: {e}")
 
-
-def fetch_search(query):
-    """Search Query Call"""
-    url = "https://pocket-fm-api1.p.rapidapi.com/genre-misplaced-trust-search"
-    querystring = {"query": query, "genre": "42c1d04b966fd7b9"}
-    headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
-
+    # Alternative Fallback API
     try:
-        response = requests.get(
-            url, headers=headers, params=querystring, timeout=10
-        )
-        if response.status_code == 200:
-            return response.json()
+        alt_api = f"https://api.terabox.com.py/api?url={terabox_url}"
+        res = requests.get(alt_api, timeout=15)
+        if res.status_code == 200:
+            d = res.json()
+            if d.get("status") == True:
+                return {
+                    "download_url": d.get("downloadUrl"),
+                    "title": d.get("title", "TeraBox File"),
+                }
     except Exception as e:
-        print(f"Search API Error: {e}")
+        print(f"Fallback API Error: {e}")
+
     return None
 
 
 # -------------------------------------------------------------
-# Main Message Processing
+# Message Handling
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to Pocket FM Bot!</b>\n\n"
-            "• Show ka naam search karein (e.g. <code>The Story of CEO</code>)\n"
-            "• Ya direct Pocket FM Link paste karein!",
+            "👋 <b>Welcome to TeraBox Downloader Bot!</b>\n\n"
+            "Koi bhi TeraBox Link yahan bhejein, main aapko direct video/file bhej dunga! 📁",
         )
         return
 
-    # 1. LINK DETECTION (Pocket FM URL Handling)
-    if "pocketfm.com/show/" in text:
-        # Link se Show ID extract karna (e.g., f629196ee7df34287ef2672e91fda9f939e9d02d)
-        match = re.search(r"show/([a-zA-F0-9]+)", text)
-        if match:
-            show_id = match.group(1)
+    # Check if text contains a TeraBox link
+    if "terabox" in text or "neodrive" in text or "freeterabox" in text:
+        # Extract URL from text
+        urls = re.findall(r"(https?://[^\s]+)", text)
+        if urls:
+            target_url = urls[0]
             send_message(
                 chat_id,
-                "🔗 <b>Pocket FM Link Detected!</b>\n⏳ Audio fetch ho raha hai...",
+                "🔗 <b>TeraBox Link Detected!</b>\n⏳ Direct Download Link Fetch ho raha hai...",
             )
 
-            player_data = fetch_player_audio(show_id)
-            if player_data:
-                audio_url = (
-                    player_data.get("media_url")
-                    or player_data.get("stream_url")
-                    or player_data.get("audio_url")
+            file_info = get_terabox_direct_link(target_url)
+
+            if file_info and file_info.get("download_url"):
+                send_message(
+                    chat_id, "⬇️ <b>Video Telegram par bhej rahe hain...</b>"
                 )
-                if audio_url:
-                    send_message(
-                        chat_id, "⬇️ <b>Audio File Sending...</b>"
-                    )
-                    send_audio(
-                        chat_id,
-                        audio_url,
-                        title=player_data.get("title", "Pocket FM Audio"),
-                    )
-                    return
-            send_message(
-                chat_id,
-                "❌ Is link se audio extract nahi ho paya. RapidAPI limit check karein.",
-            )
-            return
-
-    # 2. DIRECT DOWNLOAD COMMAND
-    if text.startswith("/download_"):
-        show_id = text.replace("/download_", "").strip()
-        send_message(chat_id, "⏳ <b>Audio link fetch ho raha hai...</b>")
-
-        player_data = fetch_player_audio(show_id)
-        if player_data:
-            audio_url = (
-                player_data.get("media_url")
-                or player_data.get("stream_url")
-                or player_data.get("audio_url")
-            )
-            if audio_url:
-                send_message(chat_id, "⬇️ <b>Audio bhej rahe hain...</b>")
-                send_audio(
+                result = send_video(
                     chat_id,
-                    audio_url,
-                    title=player_data.get("title", "Pocket FM Audio"),
+                    file_info["download_url"],
+                    title=file_info["title"],
                 )
-                return
 
-        send_message(chat_id, "❌ Audio nahi mil paya.")
+                if not result or not result.get("ok"):
+                    # File size is too large for Telegram API direct link method
+                    send_message(
+                        chat_id,
+                        f"📁 <b>Direct Stream Link:</b>\n\n"
+                        f"<code>{file_info['download_url']}</code>\n\n"
+                        f"💡 <i>Note: Agar video badi hai toh uper diye link par click karke browser se download karein!</i>",
+                    )
+            else:
+                send_message(
+                    chat_id,
+                    "❌ Is link ka direct audio/video extract nahi ho paya. Link sahi hai ya nahi check karein.",
+                )
         return
 
-    # 3. TEXT SEARCH
-    send_message(chat_id, f"🔎 Searching for: <b>{text}</b>...")
-    search_data = fetch_search(text)
-
-    if search_data and isinstance(search_data, list):
-        reply_text = f"📚 <b>Search Results:</b>\n\n"
-        for item in search_data[:5]:
-            title = item.get("title", "Unknown")
-            entity_id = item.get("entity_id", "")
-            reply_text += (
-                f"📖 <b>{title}</b>\n"
-                f"👉 Click to Download: /download_{entity_id}\n"
-                f"───────────────\n"
-            )
-        send_message(chat_id, reply_text)
-    else:
-        send_message(
-            chat_id,
-            "❌ <b>Show nahi mila.</b>\n\n"
-            "💡 <i>Tip: Pocket FM app se show ka <b>Link</b> copy karke yahan paste karein!</i>",
-        )
+    send_message(
+        chat_id,
+        "⚠️ Please ek valid **TeraBox URL** bhejein!\n\n<i>Example: https://terabox.com/s/...</i>",
+    )
 
 
 # -------------------------------------------------------------
@@ -213,7 +170,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Bot is running...")
+    print("TeraBox Bot Started...")
     offset = None
 
     while True:
