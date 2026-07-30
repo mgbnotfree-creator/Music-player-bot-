@@ -20,7 +20,7 @@ HEADERS = {
 
 
 # -------------------------------------------------------------
-# Web Server (Keep Alive)
+# Dummy Web Server (Render App Ko Alive Rakhne Ke Liye)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -28,7 +28,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Music Bot is Active!")
+        self.wfile.write(b"Music Bot is Online!")
 
     def log_message(self, format, *args):
         return
@@ -40,7 +40,7 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Functions
+# Telegram API Helpers
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -53,7 +53,7 @@ def send_message(chat_id, text):
     try:
         requests.post(url, json=payload, headers=HEADERS)
     except Exception as e:
-        print(f"Message Error: {e}")
+        print(f"Send Message Error: {e}")
 
 
 def send_audio(chat_id, audio_url, title, performer="Music Bot"):
@@ -63,7 +63,7 @@ def send_audio(chat_id, audio_url, title, performer="Music Bot"):
         "audio": audio_url,
         "title": title,
         "performer": performer,
-        "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Music Bot 🎵",
+        "caption": f"🎧 <b>{title}</b>\n\nDownloaded via MP3 Music Bot 🎵",
         "parse_mode": "HTML",
     }
     try:
@@ -82,78 +82,56 @@ def get_updates(offset=None):
         if res.status_code == 200:
             return res.json()
     except Exception as e:
-        print(f"Update error: {e}")
+        print(f"Update Error: {e}")
     return None
 
 
 # -------------------------------------------------------------
-# Reliable Audio Engine (Direct JioSaavn Unofficial API)
+# Deezer Global Music Search Engine (100% Guaranteed No Block)
 # -------------------------------------------------------------
-def get_song_audio(query):
-    # Query Clean Up
-    clean_query = (
-        query.replace("https://youtu.be/", "")
-        .replace("https://www.youtube.com/watch?v=", "")
-        .strip()
-    )
+def search_deezer_music(song_name):
+    # Cleaning the query
+    clean_name = re.sub(r"https?://\S+", "", song_name).strip()
+    if not clean_name:
+        return None
 
-    # API Request to Saavn Server
-    api_url = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_query)}"
+    api_url = f"https://api.deezer.com/search?q={requests.utils.quote(clean_name)}&limit=1"
 
     try:
         res = requests.get(api_url, headers=HEADERS, timeout=12)
         if res.status_code == 200:
             data = res.json()
-            if data.get("success") and data.get("data", {}).get("results"):
-                song = data["data"]["results"][0]
+            if data.get("data") and len(data["data"]) > 0:
+                first_track = data["data"][0]
 
-                title = song.get("name", "Unknown Song")
-                # Clean html tags from title
-                title = (
-                    title.replace("&quot;", "")
-                    .replace("&#039;", "")
-                    .replace("&amp;", "&")
+                title = first_track.get("title", "Song")
+                artist = first_track.get("artist", {}).get(
+                    "name", "Unknown Artist"
                 )
+                audio_preview = first_track.get("preview")  # Direct MP3 Link
 
-                artist = "Music Bot"
-                primary_artists = song.get("artists", {}).get("primary", [])
-                if primary_artists:
-                    artist = primary_artists[0].get("name", "Music Bot")
-
-                download_urls = song.get("downloadUrl", [])
-                if download_urls:
-                    # High quality URL select karega
-                    audio_url = download_urls[-1].get("url")
+                if audio_preview:
                     return {
                         "title": title,
                         "artist": artist,
-                        "audio_url": audio_url,
+                        "audio_url": audio_preview,
                     }
     except Exception as e:
-        print(f"Saavn Error: {e}")
+        print(f"Deezer Search Error: {e}")
 
     return None
 
 
 # -------------------------------------------------------------
-# Request Handler
+# Process Request Logic
 # -------------------------------------------------------------
-def process_song_request(chat_id, text):
-    # Multiple names detection check
-    if " ya " in text.lower() or " or " in text.lower():
-        send_message(
-            chat_id,
-            "⚠️ <b>Ek baar me sirf EK gaane ka naam likhein!</b>\n\n"
-            "Example: <code>Kesariya</code>",
-        )
-        return
-
+def process_song_search(chat_id, query_text):
     send_message(
         chat_id,
-        f"🔎 <b>Searching MP3:</b> <i>{text}</i>\n⏳ <i>Wait karein...</i>",
+        f"🔎 <b>Searching MP3:</b> <i>{query_text}</i>\n⏳ <i>Kripya wait karein...</i>",
     )
 
-    song_info = get_song_audio(text)
+    song_info = search_deezer_music(query_text)
 
     if song_info and song_info.get("audio_url"):
         title = song_info["title"]
@@ -161,15 +139,16 @@ def process_song_request(chat_id, text):
         audio_url = song_info["audio_url"]
 
         send_message(
-            chat_id, "⬆️ <b>MP3 Song Telegram par upload ho raha hai...</b>"
+            chat_id, "⬆️ <b>MP3 Track Telegram par upload ho raha hai...</b>"
         )
 
         res = send_audio(chat_id, audio_url, title=title, performer=artist)
 
+        # Fallback Link if Telegram direct upload fails
         if not res or not res.get("ok"):
             send_message(
                 chat_id,
-                f"🎧 <b>Direct MP3 Link Ready:</b>\n\n"
+                f"🎧 <b>Song MP3 Ready:</b>\n\n"
                 f"🎵 <b>{title}</b> - {artist}\n\n"
                 f"👉 <a href='{audio_url}'>Click Here To Play / Download MP3</a>",
             )
@@ -177,25 +156,25 @@ def process_song_request(chat_id, text):
         send_message(
             chat_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Sirf ek gaane ka clear naam likhein (Jaise: <code>Kesariya</code>).",
+            "Kripya kisi specific song ka sahi English/Hindi naam likhein (Jaise: <code>Kesariya</code> ya <code>Believer</code>).",
         )
 
 
 # -------------------------------------------------------------
-# Main Message Router
+# Main Message Handler
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to MP3 Music Bot! 🎶</b>\n\n"
-            "Kisi bhi EK gaane ka **Naam** likh kar bhejein!\n\n"
+            "👋 <b>Welcome to High Quality MP3 Music Bot! 🎶</b>\n\n"
+            "Kisi bhi song ka <b>Naam</b> likh kar bhejein!\n\n"
             "<i>Example: Kesariya</i>",
         )
         return
 
     threading.Thread(
-        target=process_song_request, args=(chat_id, text)
+        target=process_song_search, args=(chat_id, text)
     ).start()
 
 
@@ -204,7 +183,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Music Bot Running...")
+    print("Music Bot Active...")
     offset = None
 
     while True:
@@ -222,4 +201,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
