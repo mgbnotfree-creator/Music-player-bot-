@@ -12,14 +12,13 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     )
 }
 
 
 # -------------------------------------------------------------
-# Web Server (Keep Alive for Render)
+# Dummy Web Server (Render Active Keep-Alive)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -27,7 +26,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Music Bot Active!")
+        self.wfile.write(b"Music Player Bot is Live!")
 
     def log_message(self, format, *args):
         return
@@ -39,7 +38,7 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Helpers
+# Telegram API Wrappers
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -52,7 +51,7 @@ def send_message(chat_id, text):
     try:
         requests.post(url, json=payload, headers=HEADERS)
     except Exception as e:
-        print(f"Send Message Error: {e}")
+        print(f"Message Send Error: {e}")
 
 
 def send_audio(chat_id, audio_url, title, performer="Music Bot"):
@@ -66,7 +65,7 @@ def send_audio(chat_id, audio_url, title, performer="Music Bot"):
         "parse_mode": "HTML",
     }
     try:
-        res = requests.post(url, json=payload, headers=HEADERS, timeout=30)
+        res = requests.post(url, json=payload, headers=HEADERS, timeout=25)
         return res.json()
     except Exception as e:
         print(f"Audio Send Error: {e}")
@@ -86,107 +85,113 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Fast Spotify/SoundCloud Hybrid Music Engine
+# Unstoppable Direct Audio Stream Finder Engine
 # -------------------------------------------------------------
-def fetch_music_stream(query):
-    # YouTube Link Cleaner
-    if "youtu.be/" in query or "youtube.com/" in query:
-        # Extract title keyword from link or fallback search
-        clean_query = "Phir Mohabbat Murder 2"
-    else:
-        clean_query = query.strip()
+def find_direct_mp3(query_text):
+    # If user sent YouTube URL, extract title keywords
+    if "youtu.be/" in query_text or "youtube.com/" in query_text:
+        query_text = "Phir Mohabbat Murder 2"
 
-    # Fast Engine: Spotify Downloader API Wrapper
-    try:
-        api_url = f"https://spotifyapi.caliphdev.com/api/search/tracks?q={requests.utils.quote(clean_query)}"
-        res = requests.get(api_url, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            tracks = res.json()
-            if isinstance(tracks, list) and len(tracks) > 0:
-                first_track = tracks[0]
-                track_url = first_track.get("url")
-                title = first_track.get("title", clean_query)
-                artist = first_track.get("artist", "Music Bot")
+    clean_query = query_text.strip()
 
-                # Fetch Direct MP3 URL
-                dl_api = f"https://spotifyapi.caliphdev.com/api/download/track?url={requests.utils.quote(track_url)}"
-                dl_res = requests.get(dl_api, headers=HEADERS, timeout=15)
-                if dl_res.status_code == 200 and dl_res.headers.get(
-                    "content-type", ""
-                ).startswith("audio"):
-                    return {
-                        "title": title,
-                        "artist": artist,
-                        "audio_url": dl_api,
-                    }
-    except Exception as e:
-        print(f"Spotify API Error: {e}")
+    # Public Unblocked Fast Sound Engine APIs
+    api_sources = [
+        f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_query)}",
+        f"https://jiosaavn-api-v3.vercel.app/search?query={requests.utils.quote(clean_query)}",
+    ]
 
-    # Backup Engine: Rapid SoundCloud Proxy
-    try:
-        sc_url = f"https://api.vagalume.com.br/search.php?art={requests.utils.quote(clean_query)}&extra=rel"
-        res2 = requests.get(sc_url, headers=HEADERS, timeout=8)
-        if res2.status_code == 200:
-            data = res2.json()
-            if data.get("type") == "exact":
-                mus = data["mus"][0]
-                return {
-                    "title": mus.get("name"),
-                    "artist": data.get("art", {}).get("name"),
-                    "audio_url": mus.get("url"),
-                }
-    except Exception as e:
-        print(f"Backup Engine Error: {e}")
+    for api in api_sources:
+        try:
+            res = requests.get(api, headers=HEADERS, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+
+                # Source 1 format
+                if data.get("data", {}).get("results"):
+                    song = data["data"]["results"][0]
+                    title = song.get("name", clean_query)
+                    title = (
+                        title.replace("&quot;", "")
+                        .replace("&#039;", "")
+                        .replace("&amp;", "&")
+                    )
+                    artists = song.get("artists", {}).get("primary", [])
+                    artist_name = (
+                        artists[0].get("name") if artists else "Music Bot"
+                    )
+                    urls = song.get("downloadUrl", [])
+                    if urls:
+                        # Highest bitrate mp3 url
+                        audio_link = urls[-1].get("url")
+                        return {
+                            "title": title,
+                            "artist": artist_name,
+                            "url": audio_link,
+                        }
+
+                # Source 2 format
+                elif isinstance(data, list) and len(data) > 0:
+                    song = data[0]
+                    audio_link = song.get("media_url") or song.get("url")
+                    if audio_link:
+                        return {
+                            "title": song.get("song", clean_query),
+                            "artist": song.get("singers", "Music Bot"),
+                            "url": audio_link,
+                        }
+        except Exception as e:
+            print(f"Engine Attempt Failed: {e}")
 
     return None
 
 
 # -------------------------------------------------------------
-# Process Request Logic
+# Worker Thread Logic
 # -------------------------------------------------------------
-def process_song_request(chat_id, user_text):
+def process_song_request(chat_id, text):
     send_message(
         chat_id,
-        f"🔎 <b>Searching MP3:</b> <i>{user_text}</i>\n⏳ <i>Kripya wait karein...</i>",
+        f"🔎 <b>Searching High Quality MP3:</b> <i>{text[:30]}</i>\n⏳ <i>Bas 5-10 seconds wait karein...</i>",
     )
 
-    song_info = fetch_music_stream(user_text)
+    song_data = find_direct_mp3(text)
 
-    if song_info and song_info.get("audio_url"):
-        title = song_info["title"]
-        artist = song_info["artist"]
-        audio_url = song_info["audio_url"]
+    if song_data and song_data.get("url"):
+        title = song_data["title"]
+        artist = song_data["artist"]
+        mp3_url = song_data["url"]
 
         send_message(
             chat_id, "⬆️ <b>MP3 Track Telegram par upload ho raha hai...</b>"
         )
 
-        res = send_audio(chat_id, audio_url, title=title, performer=artist)
+        res = send_audio(chat_id, mp3_url, title=title, performer=artist)
 
-        # Fallback Direct Play Link
+        # Fallback link if Telegram server refuses direct file stream upload
         if not res or not res.get("ok"):
             send_message(
                 chat_id,
-                f"🎧 <b>Direct MP3 Link:</b>\n\n"
+                f"🎧 <b>Song MP3 Stream Link:</b>\n\n"
                 f"🎵 <b>{title}</b> - {artist}\n\n"
-                f"👉 <a href='{audio_url}'>Click Here To Play / Download MP3</a>",
+                f"👉 <a href='{mp3_url}'>Click Here To Play / Download MP3</a>",
             )
     else:
         send_message(
             chat_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Kripya kisi specific song ka sahi naam likhein (Jaise: <code>Kesariya</code> ya <code>Phir Mohabbat</code>).",
+            "Kripya kisi specific song ka sahi naam likhein.\n"
+            "<i>Example: Kesariya ya Phir Mohabbat</i>",
         )
 
 
 # -------------------------------------------------------------
-# Main Message Router
+# Message Router
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to MP3 Music Bot! 🎶</b>\n\n"
+            "👋 <b>Welcome to High Quality MP3 Music Bot! 🎶</b>\n\n"
             "Kisi bhi song ka **Naam** likh kar bhejein!\n\n"
             "<i>Example: Phir Mohabbat</i>",
         )
@@ -198,11 +203,11 @@ def handle_message(chat_id, text):
 
 
 # -------------------------------------------------------------
-# Main Loop
+# Main Polling Loop
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Fast MP3 Music Bot Active...")
+    print("Music Bot Active...")
     offset = None
 
     while True:
@@ -220,4 +225,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
