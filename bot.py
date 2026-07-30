@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 import time
@@ -12,7 +13,8 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 }
 
@@ -38,7 +40,7 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram Functions
+# Telegram API Functions
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -85,84 +87,73 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Piped API Engine (Bypasses YouTube Blocks)
+# Reliable Audio Engine (Direct JioSaavn Unofficial API)
 # -------------------------------------------------------------
-def fetch_audio_from_piped(query_or_url):
-    video_id = None
+def get_song_audio(query):
+    # Query Clean Up
+    clean_query = (
+        query.replace("https://youtu.be/", "")
+        .replace("https://www.youtube.com/watch?v=", "")
+        .strip()
+    )
 
-    # Check if input is a YouTube URL
-    if "youtu.be/" in query_or_url:
-        video_id = query_or_url.split("youtu.be/")[1].split("?")[0].split("&")[0]
-    elif "youtube.com/watch" in query_or_url:
-        match = re.search(r"v=([a-zA-Z0-9_-]+)", query_or_url)
-        if match:
-            video_id = match.group(1)
+    # API Request to Saavn Server
+    api_url = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_query)}"
 
-    piped_instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.private.coffee",
-        "https://pipedapi.mha.fi",
-    ]
+    try:
+        res = requests.get(api_url, headers=HEADERS, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("success") and data.get("data", {}).get("results"):
+                song = data["data"]["results"][0]
 
-    # If not a URL, search by song name
-    if not video_id:
-        for instance in piped_instances:
-            try:
-                search_url = f"{instance}/search?q={requests.utils.quote(query_or_url)}&filter=music_songs"
-                res = requests.get(search_url, headers=HEADERS, timeout=8)
-                if res.status_code == 200:
-                    data = res.json()
-                    items = data.get("items", [])
-                    if items:
-                        url_path = items[0].get("url", "")
-                        if "/watch?v=" in url_path:
-                            video_id = url_path.split("/watch?v=")[1]
-                            break
-            except Exception as e:
-                print(f"Search failed on {instance}: {e}")
+                title = song.get("name", "Unknown Song")
+                # Clean html tags from title
+                title = (
+                    title.replace("&quot;", "")
+                    .replace("&#039;", "")
+                    .replace("&amp;", "&")
+                )
 
-    if not video_id:
-        return None
+                artist = "Music Bot"
+                primary_artists = song.get("artists", {}).get("primary", [])
+                if primary_artists:
+                    artist = primary_artists[0].get("name", "Music Bot")
 
-    # Fetch Audio Stream URL using Video ID
-    for instance in piped_instances:
-        try:
-            stream_url = f"{instance}/streams/{video_id}"
-            res = requests.get(stream_url, headers=HEADERS, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                title = data.get("title", "Song Audio")
-                uploader = data.get("uploader", "Music Bot")
-                audio_streams = data.get("audioStreams", [])
-
-                if audio_streams:
-                    # Pick highest bitrate audio stream
-                    best_audio = sorted(
-                        audio_streams,
-                        key=lambda x: x.get("bitrate", 0),
-                        reverse=True,
-                    )[0]
+                download_urls = song.get("downloadUrl", [])
+                if download_urls:
+                    # High quality URL select karega
+                    audio_url = download_urls[-1].get("url")
                     return {
                         "title": title,
-                        "artist": uploader,
-                        "audio_url": best_audio.get("url"),
+                        "artist": artist,
+                        "audio_url": audio_url,
                     }
-        except Exception as e:
-            print(f"Stream fetch failed on {instance}: {e}")
+    except Exception as e:
+        print(f"Saavn Error: {e}")
 
     return None
 
 
 # -------------------------------------------------------------
-# Request Processor
+# Request Handler
 # -------------------------------------------------------------
-def process_song_request(chat_id, query_text):
+def process_song_request(chat_id, text):
+    # Multiple names detection check
+    if " ya " in text.lower() or " or " in text.lower():
+        send_message(
+            chat_id,
+            "⚠️ <b>Ek baar me sirf EK gaane ka naam likhein!</b>\n\n"
+            "Example: <code>Kesariya</code>",
+        )
+        return
+
     send_message(
         chat_id,
-        f"🔎 <b>Searching MP3:</b> <i>{query_text}</i>\n⏳ <i>Wait karein...</i>",
+        f"🔎 <b>Searching MP3:</b> <i>{text}</i>\n⏳ <i>Wait karein...</i>",
     )
 
-    song_info = fetch_audio_from_piped(query_text)
+    song_info = get_song_audio(text)
 
     if song_info and song_info.get("audio_url"):
         title = song_info["title"]
@@ -173,33 +164,32 @@ def process_song_request(chat_id, query_text):
             chat_id, "⬆️ <b>MP3 Song Telegram par upload ho raha hai...</b>"
         )
 
-        result = send_audio(chat_id, audio_url, title=title, performer=artist)
+        res = send_audio(chat_id, audio_url, title=title, performer=artist)
 
-        # Fallback direct download link if Telegram audio send times out
-        if not result or not result.get("ok"):
+        if not res or not res.get("ok"):
             send_message(
                 chat_id,
-                f"🎧 <b>Song Download Link Ready:</b>\n\n"
-                f"🎵 <b>{title}</b>\n\n"
-                f"👉 <a href='{audio_url}'>Click Here To Play/Download MP3</a>",
+                f"🎧 <b>Direct MP3 Link Ready:</b>\n\n"
+                f"🎵 <b>{title}</b> - {artist}\n\n"
+                f"👉 <a href='{audio_url}'>Click Here To Play / Download MP3</a>",
             )
     else:
         send_message(
             chat_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Kripya sahi naam likhein (Jaise: <code>Kesariya</code> ya <code>Tere Sang Yaara</code>).",
+            "Sirf ek gaane ka clear naam likhein (Jaise: <code>Kesariya</code>).",
         )
 
 
 # -------------------------------------------------------------
-# Main Message Handler
+# Main Message Router
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
             "👋 <b>Welcome to MP3 Music Bot! 🎶</b>\n\n"
-            "Gaane ka **Naam** likhein ya **YouTube Link** paste karein!\n\n"
+            "Kisi bhi EK gaane ka **Naam** likh kar bhejein!\n\n"
             "<i>Example: Kesariya</i>",
         )
         return
@@ -214,7 +204,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Piped Engine Music Bot Running...")
+    print("Music Bot Running...")
     offset = None
 
     while True:
@@ -232,4 +222,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
