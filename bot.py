@@ -7,7 +7,7 @@ import requests
 import yt_dlp
 
 # -------------------------------------------------------------
-# Configuration
+# Bot Configurations
 # -------------------------------------------------------------
 BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -20,7 +20,7 @@ HEADERS = {
 
 
 # -------------------------------------------------------------
-# Web Server for Render Keep-Alive
+# Keep-Alive Web Server for Render Free Tier
 # -------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
@@ -28,7 +28,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Bot Active & Working Perfect!")
+        self.wfile.write(b"Music Downloader Server Running!")
 
     def log_message(self, format, *args):
         return
@@ -41,7 +41,7 @@ def run_health_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Wrappers
+# Pure Telegram API Calls (No 'telegram' package needed)
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -52,9 +52,42 @@ def send_message(chat_id, text):
         "disable_web_page_preview": True,
     }
     try:
-        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+        res = requests.post(
+            url, json=payload, headers=HEADERS, timeout=10
+        ).json()
+        if res.get("ok"):
+            return res.get("result", {}).get("message_id")
     except Exception as e:
         print(f"Send Msg Error: {e}")
+    return None
+
+
+def edit_message(chat_id, message_id, text):
+    if not message_id:
+        return
+    url = f"{BASE_URL}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+    except Exception as e:
+        print(f"Edit Msg Error: {e}")
+
+
+def delete_message(chat_id, message_id):
+    if not message_id:
+        return
+    url = f"{BASE_URL}/deleteMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    try:
+        requests.post(url, json=payload, headers=HEADERS, timeout=10)
+    except Exception:
+        pass
 
 
 def upload_audio_file(chat_id, filepath, title, performer):
@@ -91,10 +124,9 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Fast Audio Downloader (yt-dlp Engine)
+# High Performance Downloader Engine (yt-dlp)
 # -------------------------------------------------------------
-def download_audio_yt_dlp(search_query):
-    # Determine search strategy
+def download_audio(search_query):
     if search_query.startswith("http://") or search_query.startswith(
         "https://"
     ):
@@ -124,7 +156,7 @@ def download_audio_yt_dlp(search_query):
             if "entries" in info and info["entries"]:
                 info = info["entries"][0]
 
-            title = info.get("title", "Music Song")
+            title = info.get("title", "Audio Track")
             performer = info.get("uploader", "Music Bot")
 
             if os.path.exists(out_file):
@@ -136,44 +168,50 @@ def download_audio_yt_dlp(search_query):
 
 
 # -------------------------------------------------------------
-# Worker Thread Logic
+# Worker Request Handling
 # -------------------------------------------------------------
 def process_song_request(chat_id, user_text):
-    send_message(
+    msg_id = send_message(
         chat_id,
         f"🔎 <b>Searching & Downloading MP3:</b> <i>{user_text[:25]}</i>\n⏳ <i>Bas 5-10 seconds wait karein...</i>",
     )
 
-    file_path, title, performer = download_audio_yt_dlp(user_text)
+    file_path, title, performer = download_audio(user_text)
 
     if file_path and os.path.exists(file_path):
-        send_message(
-            chat_id, "⬆️ <b>MP3 Audio file Telegram par upload ho rahi hai...</b>"
+        edit_message(
+            chat_id,
+            msg_id,
+            "⬆️ <b>MP3 Audio file Telegram par upload ho rahi hai...</b>",
         )
 
         res = upload_audio_file(chat_id, file_path, title, performer)
 
-        # Cleanup local downloaded file
+        # Remove local file after attempt
         try:
             os.remove(file_path)
         except Exception:
             pass
 
-        if not res or not res.get("ok"):
-            send_message(
+        if res and res.get("ok"):
+            delete_message(chat_id, msg_id)
+        else:
+            edit_message(
                 chat_id,
-                "❌ <b>Upload Error!</b> Telegram server par file upload nahi ho payi.",
+                msg_id,
+                "❌ <b>Upload Error!</b> File size zyaada hone ki wajah se Telegram ne reject kar diya.",
             )
     else:
-        send_message(
+        edit_message(
             chat_id,
+            msg_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
             "Kripya kisi specific song ka sahi naam ya YouTube link bhejein.",
         )
 
 
 # -------------------------------------------------------------
-# Message Router & Polling
+# Main Telegram Polling Loop
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
@@ -192,7 +230,7 @@ def handle_message(chat_id, text):
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
-    print("Clean Polling Bot Engine Active...")
+    print("Clean Native Polling Engine Started...")
     offset = None
 
     while True:
@@ -210,4 +248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
