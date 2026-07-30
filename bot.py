@@ -20,7 +20,7 @@ HEADERS = {
 
 
 # -------------------------------------------------------------
-# Dummy Web Server (Render App Ko Alive Rakhne Ke Liye)
+# Web Server (Keep Render Alive)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -28,7 +28,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Music Bot is Online!")
+        self.wfile.write(b"Full Song MP3 Bot is Running!")
 
     def log_message(self, format, *args):
         return
@@ -56,22 +56,44 @@ def send_message(chat_id, text):
         print(f"Send Message Error: {e}")
 
 
-def send_audio(chat_id, audio_url, title, performer="Music Bot"):
+def send_audio(chat_id, audio_input, title, performer="Music Bot"):
     url = f"{BASE_URL}/sendAudio"
-    payload = {
-        "chat_id": chat_id,
-        "audio": audio_url,
-        "title": title,
-        "performer": performer,
-        "caption": f"🎧 <b>{title}</b>\n\nDownloaded via MP3 Music Bot 🎵",
-        "parse_mode": "HTML",
-    }
-    try:
-        res = requests.post(url, json=payload, headers=HEADERS, timeout=30)
-        return res.json()
-    except Exception as e:
-        print(f"Audio Send Error: {e}")
-        return None
+
+    # If input is a web URL
+    if str(audio_input).startswith("http"):
+        payload = {
+            "chat_id": chat_id,
+            "audio": audio_input,
+            "title": title,
+            "performer": performer,
+            "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Music Bot 🎵",
+            "parse_mode": "HTML",
+        }
+        try:
+            res = requests.post(url, json=payload, headers=HEADERS, timeout=30)
+            return res.json()
+        except Exception as e:
+            print(f"Send Audio Link Error: {e}")
+            return None
+    else:
+        # If input is a local file
+        try:
+            with open(audio_input, "rb") as file_data:
+                files = {"audio": file_data}
+                data = {
+                    "chat_id": chat_id,
+                    "title": title,
+                    "performer": performer,
+                    "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Music Bot 🎵",
+                    "parse_mode": "HTML",
+                }
+                res = requests.post(
+                    url, data=data, files=files, headers=HEADERS, timeout=60
+                )
+                return res.json()
+        except Exception as e:
+            print(f"Send Local File Error: {e}")
+            return None
 
 
 def get_updates(offset=None):
@@ -87,51 +109,115 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Deezer Global Music Search Engine (100% Guaranteed No Block)
+# Extract Query or Video ID from YouTube Link
 # -------------------------------------------------------------
-def search_deezer_music(song_name):
-    # Cleaning the query
-    clean_name = re.sub(r"https?://\S+", "", song_name).strip()
-    if not clean_name:
-        return None
+def clean_user_input(text):
+    text = text.strip()
 
-    api_url = f"https://api.deezer.com/search?q={requests.utils.quote(clean_name)}&limit=1"
+    # YouTube URL check
+    yt_match = re.search(
+        r"(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})", text
+    )
+    if yt_match:
+        video_id = yt_match.group(1)
+        return {"type": "yt_id", "value": video_id}
 
+    return {"type": "name", "value": text}
+
+
+# -------------------------------------------------------------
+# Multi-Source Full Audio Downloader Engine
+# -------------------------------------------------------------
+def fetch_full_mp3(input_data):
+    # Method 1: JioSaavn Unofficial Clean API (Full 320kbps/160kbps MP3)
+    if input_data["type"] == "name":
+        search_query = input_data["value"]
+        try:
+            saavn_api = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(search_query)}"
+            res = requests.get(saavn_api, headers=HEADERS, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("success") and data.get("data", {}).get("results"):
+                    song = data["data"]["results"][0]
+                    title = song.get("name", search_query)
+                    title = (
+                        title.replace("&quot;", "")
+                        .replace("&#039;", "")
+                        .replace("&amp;", "&")
+                    )
+
+                    artist_list = song.get("artists", {}).get("primary", [])
+                    artist = (
+                        artist_list[0].get("name", "Artist")
+                        if artist_list
+                        else "Music Bot"
+                    )
+
+                    download_urls = song.get("downloadUrl", [])
+                    if download_urls:
+                        audio_url = download_urls[-1].get("url")
+                        return {
+                            "title": title,
+                            "artist": artist,
+                            "audio_url": audio_url,
+                        }
+        except Exception as e:
+            print(f"Saavn Engine Error: {e}")
+
+    # Method 2: Cobalt Public API Engine (Handles YouTube Links & Full Extracts)
     try:
-        res = requests.get(api_url, headers=HEADERS, timeout=12)
+        if input_data["type"] == "yt_id":
+            target_url = f"https://www.youtube.com/watch?v={input_data['value']}"
+        else:
+            target_url = f"ytsearch1:{input_data['value']}"
+
+        cobalt_api = "https://api.cobalt.tools/api/json"
+        payload = {
+            "url": (
+                target_url
+                if input_data["type"] == "yt_id"
+                else f"https://www.youtube.com/results?search_query={requests.utils.quote(input_data['value'])}"
+            ),
+            "isAudioOnly": True,
+            "aFormat": "mp3",
+        }
+        c_headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        res = requests.post(
+            cobalt_api, json=payload, headers=c_headers, timeout=12
+        )
         if res.status_code == 200:
-            data = res.json()
-            if data.get("data") and len(data["data"]) > 0:
-                first_track = data["data"][0]
-
-                title = first_track.get("title", "Song")
-                artist = first_track.get("artist", {}).get(
-                    "name", "Unknown Artist"
-                )
-                audio_preview = first_track.get("preview")  # Direct MP3 Link
-
-                if audio_preview:
-                    return {
-                        "title": title,
-                        "artist": artist,
-                        "audio_url": audio_preview,
-                    }
+            c_data = res.json()
+            if c_data.get("url"):
+                return {
+                    "title": input_data["value"],
+                    "artist": "Music Bot",
+                    "audio_url": c_data["url"],
+                }
     except Exception as e:
-        print(f"Deezer Search Error: {e}")
+        print(f"Cobalt Engine Error: {e}")
 
     return None
 
 
 # -------------------------------------------------------------
-# Process Request Logic
+# Request Processing Thread
 # -------------------------------------------------------------
-def process_song_search(chat_id, query_text):
+def process_song_request(chat_id, user_text):
+    parsed_input = clean_user_input(user_text)
+
+    display_name = user_text
+    if len(display_name) > 40:
+        display_name = display_name[:37] + "..."
+
     send_message(
         chat_id,
-        f"🔎 <b>Searching MP3:</b> <i>{query_text}</i>\n⏳ <i>Kripya wait karein...</i>",
+        f"🔎 <b>Full MP3 Search:</b> <i>{display_name}</i>\n⏳ <i>Downloading...</i>",
     )
 
-    song_info = search_deezer_music(query_text)
+    song_info = fetch_full_mp3(parsed_input)
 
     if song_info and song_info.get("audio_url"):
         title = song_info["title"]
@@ -139,51 +225,52 @@ def process_song_search(chat_id, query_text):
         audio_url = song_info["audio_url"]
 
         send_message(
-            chat_id, "⬆️ <b>MP3 Track Telegram par upload ho raha hai...</b>"
+            chat_id, "⬆️ <b>Full Song Telegram par upload ho raha hai...</b>"
         )
 
         res = send_audio(chat_id, audio_url, title=title, performer=artist)
 
-        # Fallback Link if Telegram direct upload fails
+        # Direct Link Backup if Upload Fails
         if not res or not res.get("ok"):
             send_message(
                 chat_id,
-                f"🎧 <b>Song MP3 Ready:</b>\n\n"
+                f"🎧 <b>Full MP3 Song Stream Link:</b>\n\n"
                 f"🎵 <b>{title}</b> - {artist}\n\n"
                 f"👉 <a href='{audio_url}'>Click Here To Play / Download MP3</a>",
             )
     else:
         send_message(
             chat_id,
-            "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Kripya kisi specific song ka sahi English/Hindi naam likhein (Jaise: <code>Kesariya</code> ya <code>Believer</code>).",
+            "❌ <b>Gaana nahi mil saka!</b>\n\n"
+            "Kripya simple format me song ka naam likhein:\n"
+            "<i>Example: <code>Phir Mohabbat Murder 2</code></i>",
         )
 
 
 # -------------------------------------------------------------
-# Main Message Handler
+# Main Message Router
 # -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to High Quality MP3 Music Bot! 🎶</b>\n\n"
-            "Kisi bhi song ka <b>Naam</b> likh kar bhejein!\n\n"
-            "<i>Example: Kesariya</i>",
+            "👋 <b>Welcome to Full MP3 Music Bot! 🎶</b>\n\n"
+            "Aap **Gaane Ka Naam** ya **YouTube Link** bhej sakte hain!\n\n"
+            "<i>Example: Phir Mohabbat Murder 2</i>",
         )
         return
 
     threading.Thread(
-        target=process_song_search, args=(chat_id, text)
+        target=process_song_request, args=(chat_id, text)
     ).start()
 
 
 # -------------------------------------------------------------
-# Main Loop
+# Main Polling Loop
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Music Bot Active...")
+    print("Full Song Music Bot Online...")
     offset = None
 
     while True:
@@ -201,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                    
