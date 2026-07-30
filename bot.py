@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 
 # -------------------------------------------------------------
-# Configuration
+# Bot Configuration
 # -------------------------------------------------------------
 BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -14,13 +14,13 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-        " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        " like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
 
 
 # -------------------------------------------------------------
-# Web Server (Keep Render Alive)
+# Dummy Web Server (Render App Ko Alive Rakhne Ke Liye)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -28,7 +28,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Music Player Bot Online!")
+        self.wfile.write(b"Music Bot Alive!")
 
     def log_message(self, format, *args):
         return
@@ -40,7 +40,7 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Wrappers
+# Telegram API Helpers
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
@@ -67,10 +67,10 @@ def send_audio(chat_id, audio_url, title, performer="Music Bot"):
         "parse_mode": "HTML",
     }
     try:
-        res = requests.post(url, json=payload, headers=HEADERS, timeout=25)
+        res = requests.post(url, json=payload, headers=HEADERS, timeout=30)
         return res.json()
     except Exception as e:
-        print(f"Audio Send Error: {e}")
+        print(f"Send Audio Error: {e}")
         return None
 
 
@@ -87,140 +87,127 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Clean User Input & Extract YouTube Title
+# Proxy-Mesh Invidious/Piped Engine (Bypasses Cloud IP Blocks)
 # -------------------------------------------------------------
-def extract_clean_query(text):
-    text = text.strip()
+INVIDIOUS_INSTANCES = [
+    "https://inv.riverside.rocks",
+    "https://invidious.nerdvpn.de",
+    "https://vid.puffyan.us",
+    "https://invidious.flokinet.to",
+]
 
-    # Case 1: If YouTube URL is passed, get title from oEmbed API
-    if "youtu.be/" in text or "youtube.com/" in text:
-        try:
-            oembed_url = f"https://www.youtube.com/oembed?url={text}&format=json"
-            res = requests.get(oembed_url, headers=HEADERS, timeout=5)
-            if res.status_code == 200:
-                yt_title = res.json().get("title", "")
-                if yt_title:
-                    text = yt_title
-        except Exception:
-            pass
 
-    # Clean YouTube metadata tags like "| Official Video", "HD", Movie Name extra noise
-    text = re.sub(
-        r"https?://\S+", "", text
-    )  # Remove URL if remaining fallback
-    text = re.sub(
-        r"\(.*?\)|\[.*?\]", "", text
-    )  # Remove (Official Video) [HD] etc.
-    text = re.sub(
-        r"(?i)official|video|song|full|hd|lyrical|movie|4k|version", "", text
+def extract_video_id(user_text):
+    # If input is a YouTube Link
+    yt_match = re.search(
+        r"(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})", user_text
     )
-    text = text.replace("|", " ").replace("-", " ").strip()
+    if yt_match:
+        return yt_match.group(1)
 
-    # If user wrote 'Phir Mohabbat Murder 2', strip long words down to main query if needed
-    words = text.split()
-    if len(words) > 4:
-        text = " ".join(words[:4])
+    # Clean non-music terms from title queries
+    clean_query = re.sub(
+        r"https?://\S+|official|video|song|full|hd|lyrical|4k",
+        "",
+        user_text,
+        flags=re.I,
+    ).strip()
 
-    return text if text else "Phir Mohabbat"
+    # If it's a song name, search via Invidious Instances
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            search_api = f"{instance}/api/v1/search?q={requests.utils.quote(clean_query)}&type=video"
+            res = requests.get(search_api, headers=HEADERS, timeout=6)
+            if res.status_code == 200:
+                items = res.json()
+                if items and len(items) > 0:
+                    return items[0].get("videoId")
+        except Exception:
+            continue
+
+    return None
 
 
-# -------------------------------------------------------------
-# JioSaavn API Audio Engine (Primary & Fallback)
-# -------------------------------------------------------------
-def fetch_direct_mp3_saavn(song_query):
-    encoded_query = requests.utils.quote(song_query)
+def get_audio_stream_url(video_id):
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            video_api = f"{instance}/api/v1/videos/{video_id}"
+            res = requests.get(video_api, headers=HEADERS, timeout=6)
+            if res.status_code == 200:
+                data = res.json()
+                title = data.get("title", "Song Audio")
+                author = data.get("author", "Music Bot")
 
-    # Engine 1: Saavn.dev API
-    try:
-        url1 = f"https://saavn.dev/api/search/songs?query={encoded_query}"
-        res1 = requests.get(url1, headers=HEADERS, timeout=8)
-        if res1.status_code == 200:
-            data = res1.json()
-            results = data.get("data", {}).get("results", [])
-            if results:
-                song = results[0]
-                title = song.get("name", song_query)
-                title = (
-                    title.replace("&quot;", "")
-                    .replace("&#039;", "")
-                    .replace("&amp;", "&")
-                )
+                adaptive_formats = data.get("adaptiveFormats", [])
+                audio_streams = [
+                    fmt
+                    for fmt in adaptive_formats
+                    if fmt.get("type", "").startswith("audio/")
+                ]
 
-                artists = song.get("artists", {}).get("primary", [])
-                artist_name = (
-                    artists[0].get("name") if artists else "Music Bot"
-                )
-
-                download_urls = song.get("downloadUrl", [])
-                if download_urls:
-                    audio_url = download_urls[-1].get("url")  # Highest quality
+                if audio_streams:
+                    # Pick best bitrate audio format
+                    audio_streams.sort(
+                        key=lambda x: int(x.get("bitrate", 0)), reverse=True
+                    )
+                    best_audio = audio_streams[0]
                     return {
                         "title": title,
-                        "artist": artist_name,
-                        "url": audio_url,
+                        "artist": author,
+                        "audio_url": best_audio.get("url"),
                     }
-    except Exception as e:
-        print(f"Saavn.dev Error: {e}")
-
-    # Engine 2: Saavn V3 Backup Engine
-    try:
-        url2 = f"https://jiosaavn-api-v3.vercel.app/search?query={encoded_query}"
-        res2 = requests.get(url2, headers=HEADERS, timeout=8)
-        if res2.status_code == 200:
-            data = res2.json()
-            if isinstance(data, list) and len(data) > 0:
-                song = data[0]
-                audio_url = song.get("media_url") or song.get("url")
-                if audio_url:
-                    return {
-                        "title": song.get("song", song_query),
-                        "artist": song.get("singers", "Music Bot"),
-                        "url": audio_url,
-                    }
-    except Exception as e:
-        print(f"JioSaavn V3 Error: {e}")
+        except Exception:
+            continue
 
     return None
 
 
 # -------------------------------------------------------------
-# Process Request Loop
+# Request Processor Logic
 # -------------------------------------------------------------
-def process_song_request(chat_id, raw_input):
-    clean_query = extract_clean_query(raw_input)
-
+def process_song_request(chat_id, user_input):
     send_message(
         chat_id,
-        f"🔎 <b>Searching MP3:</b> <i>{clean_query}</i>\n⏳ <i>Wait karein, download ho raha hai...</i>",
+        f"🔎 <b>Searching MP3 Stream...</b>\n⏳ <i>Kripya wait karein...</i>",
     )
 
-    song_data = fetch_direct_mp3_saavn(clean_query)
+    vid_id = extract_video_id(user_input)
 
-    if song_data and song_data.get("url"):
-        title = song_data["title"]
-        artist = song_data["artist"]
-        mp3_url = song_data["url"]
+    if not vid_id:
+        send_message(
+            chat_id,
+            "❌ <b>Gaana nahi mila!</b>\n\n"
+            "Kripya simple format me song ka naam likhein.\n"
+            "<i>Example: Kesariya ya Phir Mohabbat</i>",
+        )
+        return
+
+    song_info = get_audio_stream_url(vid_id)
+
+    if song_info and song_info.get("audio_url"):
+        title = song_info["title"]
+        artist = song_info["artist"]
+        audio_url = song_info["audio_url"]
 
         send_message(
             chat_id, "⬆️ <b>MP3 Track Telegram par upload ho raha hai...</b>"
         )
 
-        res = send_audio(chat_id, mp3_url, title=title, performer=artist)
+        res = send_audio(chat_id, audio_url, title=title, performer=artist)
 
-        # Fallback Direct Link if Telegram Upload times out
+        # Direct Audio Link Backup
         if not res or not res.get("ok"):
             send_message(
                 chat_id,
-                f"🎧 <b>Song MP3 Stream Link:</b>\n\n"
+                f"🎧 <b>Direct MP3 Audio Ready:</b>\n\n"
                 f"🎵 <b>{title}</b> - {artist}\n\n"
-                f"👉 <a href='{mp3_url}'>Click Here To Play / Download MP3</a>",
+                f"👉 <a href='{audio_url}'>Click Here To Play/Download MP3</a>",
             )
     else:
         send_message(
             chat_id,
             "❌ <b>Gaana nahi mila!</b>\n\n"
-            "Kripya kisi specific song ka simple naam likhein.\n"
-            "<i>Example: Kesariya ya Phir Mohabbat</i>",
+            "Server block ki wajah se stream fetch nahi ho saki. Direct short song name try karein (Jaise: <code>Kesariya</code>).",
         )
 
 
@@ -232,7 +219,7 @@ def handle_message(chat_id, text):
         send_message(
             chat_id,
             "👋 <b>Welcome to High Quality MP3 Music Bot! 🎶</b>\n\n"
-            "Kisi bhi song ka **Naam** ya **YouTube Link** bhejien!\n\n"
+            "Gaane ka **Naam** likhein ya **YouTube Link** bhejien!\n\n"
             "<i>Example: Phir Mohabbat</i>",
         )
         return
@@ -247,7 +234,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Zero-Failure Music Bot Active...")
+    print("Multi-Proxy Music Bot Running...")
     offset = None
 
     while True:
@@ -265,4 +252,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
