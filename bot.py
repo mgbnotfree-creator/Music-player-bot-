@@ -1,18 +1,24 @@
-import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 
 # -------------------------------------------------------------
-# Configuration Variables
+# Configuration
 # -------------------------------------------------------------
 BOT_TOKEN = "8983781306:AAHod4RCSd6G3L_A2stv_GQWLvOWm3S3LvQ"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    )
+}
+
 
 # -------------------------------------------------------------
-# Dummy Web Server (Render App ko Active rakhne ke liye)
+# Dummy Web Server (Render App Active Rakhne Ke Liye)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
 
@@ -20,7 +26,7 @@ class DummyServerHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"JioSaavn Music Bot is Running Live!")
+        self.wfile.write(b"MP3 Music Bot Active & Running!")
 
     def log_message(self, format, *args):
         return
@@ -32,13 +38,18 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Functions
+# Telegram Functions
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
     try:
-        requests.post(url, json=payload)
+        requests.post(url, json=payload, headers=HEADERS)
     except Exception as e:
         print(f"Message Error: {e}")
 
@@ -50,11 +61,11 @@ def send_audio(chat_id, audio_url, title, performer="Music Bot"):
         "audio": audio_url,
         "title": title,
         "performer": performer,
-        "caption": f"🎧 <b>{title}</b>\n\nDownloaded via JioSaavn Music Bot 🎶",
+        "caption": f"🎧 <b>{title}</b>\n\n🎵 Downloaded via Music Bot",
         "parse_mode": "HTML",
     }
     try:
-        res = requests.post(url, json=payload, timeout=30)
+        res = requests.post(url, json=payload, headers=HEADERS, timeout=30)
         return res.json()
     except Exception as e:
         print(f"Audio Send Error: {e}")
@@ -74,68 +85,105 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# JioSaavn API Engine (No Youtube Block Issue)
+# Multi-Engine JioSaavn Music Fetcher
 # -------------------------------------------------------------
-def search_and_download_saavn(chat_id, song_name):
+def fetch_song_from_saavn(song_name):
+    encoded_query = requests.utils.quote(song_name)
+
+    # Engine 1: Saavn.dev API
+    try:
+        url1 = (
+            f"https://saavn.dev/api/search/songs?query={encoded_query}&limit=1"
+        )
+        r1 = requests.get(url1, headers=HEADERS, timeout=10)
+        if r1.status_code == 200:
+            d1 = r1.json()
+            if d1.get("success") and d1.get("data", {}).get("results"):
+                song = d1["data"]["results"][0]
+                dl_urls = song.get("downloadUrl", [])
+                if dl_urls:
+                    return {
+                        "title": song.get("name", song_name),
+                        "artist": song.get("artists", {})
+                        .get("primary", [{}])[0]
+                        .get("name", "Artist"),
+                        "audio_url": dl_urls[-1].get("url"),
+                    }
+    except Exception as e:
+        print(f"Engine 1 Error: {e}")
+
+    # Engine 2: Saavn.me Backup API
+    try:
+        url2 = (
+            f"https://saavn.me/search/songs?query={encoded_query}&page=1&limit=1"
+        )
+        r2 = requests.get(url2, headers=HEADERS, timeout=10)
+        if r2.status_code == 200:
+            d2 = r2.json()
+            if d2.get("status") == "SUCCESS" and d2.get("data", {}).get(
+                "results"
+            ):
+                song = d2["data"]["results"][0]
+                dl_urls = song.get("downloadUrl", [])
+                if dl_urls:
+                    return {
+                        "title": song.get("name", song_name),
+                        "artist": song.get("primaryArtists", "Artist"),
+                        "audio_url": dl_urls[-1].get("link")
+                        or dl_urls[-1].get("url"),
+                    }
+    except Exception as e:
+        print(f"Engine 2 Error: {e}")
+
+    return None
+
+
+# -------------------------------------------------------------
+# Process Song Search
+# -------------------------------------------------------------
+def process_song_search(chat_id, query_text):
+    # Agar user ne URL bhej diya, toh URL me se song name guess karein
+    if "http://" in query_text or "https://" in query_text:
+        query_text = (
+            query_text.replace("https://youtu.be/", "")
+            .replace("https://www.youtube.com/watch?v=", "")
+            .split("?")[0]
+        )
+        if not query_text or len(query_text) < 3:
+            send_message(
+                chat_id,
+                "⚠️ <b>Kripya Link ki jagah Gaane ka Naam likhein!</b>\n\n<i>Example: Agar Tum Saath Ho</i>",
+            )
+            return
+
     send_message(
         chat_id,
-        f"🔎 <b>Searching JioSaavn:</b> <i>{song_name}</i>\n⏳ Kripya thoda wait karein...",
+        f"🔎 <b>Searching MP3 Song:</b> <i>{query_text}</i>\n⏳ <i>Wait karein...</i>",
     )
 
-    api_url = (
-        f"https://saavn.dev/api/search/songs?query={requests.utils.quote(song_name)}&limit=1"
-    )
+    song_data = fetch_song_from_saavn(query_text)
 
-    try:
-        response = requests.get(api_url, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
+    if song_data and song_data.get("audio_url"):
+        title = song_data["title"]
+        artist = song_data["artist"]
+        audio_url = song_data["audio_url"]
 
-            if data.get("success") and data.get("data", {}).get("results"):
-                song = data["data"]["results"][0]
+        send_message(chat_id, "⬆️ <b>MP3 Song Telegram par upload ho raha hai...</b>")
 
-                title = song.get("name", "Unknown Song")
-                artist = (
-                    song.get("artists", {})
-                    .get("primary", [{}])[0]
-                    .get("name", "Various Artists")
-                )
+        result = send_audio(chat_id, audio_url, title=title, performer=artist)
 
-                # Get Highest Quality Download URL (320kbps or 160kbps)
-                download_urls = song.get("downloadUrl", [])
-                audio_url = None
-
-                if download_urls:
-                    # Select highest quality available (usually last element)
-                    audio_url = download_urls[-1].get("url")
-
-                if audio_url:
-                    send_message(
-                        chat_id, "⬆️ <b>MP3 Audio Telegram par bhej rahe hain...</b>"
-                    )
-                    result = send_audio(
-                        chat_id, audio_url, title=title, performer=artist
-                    )
-
-                    if not result or not result.get("ok"):
-                        # If Telegram fails to upload direct link, give direct stream URL
-                        send_message(
-                            chat_id,
-                            f"🎶 <b>Direct Song Stream Link:</b>\n\n"
-                            f"<b>Song:</b> {title}\n"
-                            f"👉 <a href='{audio_url}'>Click Here to Play/Download MP3</a>",
-                        )
-                    return
-
+        if not result or not result.get("ok"):
+            send_message(
+                chat_id,
+                f"🎧 <b>Song Download Link Ready:</b>\n\n"
+                f"🎵 <b>{title}</b> - {artist}\n\n"
+                f"👉 <a href='{audio_url}'>Click Here To Play / Download MP3</a>",
+            )
+    else:
         send_message(
             chat_id,
-            "❌ <b>Gaana nahi mila!</b>\nSpelling sahi karke dusra naam likhein.",
-        )
-
-    except Exception as e:
-        print(f"Saavn API Error: {e}")
-        send_message(
-            chat_id, "❌ Error: Song fetch karne me dikkat aayi. Phir se try karein."
+            "❌ <b>Gaana nahi mila!</b>\n\n"
+            "💡 <i>Tip: Sahi spelling ke sath gaane ka naam likhein (Jaise: <b>Kesariya</b> ya <b>Tere Sang Yaara</b>).</i>",
         )
 
 
@@ -147,14 +195,13 @@ def handle_message(chat_id, text):
         send_message(
             chat_id,
             "👋 <b>Welcome to High Quality MP3 Music Bot! 🎶</b>\n\n"
-            "Kisi bhi Hindi, English, ya Regional gaane ka **Naam** likhkar bhejein!\n\n"
+            "Bas kisi bhi gaane ka **Naam** (Name) likh kar bhejein!\n\n"
             "<i>Example: Agar Tum Saath Ho</i>",
         )
         return
 
-    # Process search in background thread
     threading.Thread(
-        target=search_and_download_saavn, args=(chat_id, text)
+        target=process_song_search, args=(chat_id, text)
     ).start()
 
 
@@ -163,7 +210,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Saavn MP3 Bot Active...")
+    print("Multi-Engine Music Bot Active...")
     offset = None
 
     while True:
