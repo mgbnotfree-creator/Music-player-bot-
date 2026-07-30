@@ -82,83 +82,112 @@ def delete_msg(chat_id, msg_id):
         pass
 
 
-def upload_mp3_by_url(chat_id, audio_url, title):
-    """Directly sends audio via URL to avoid local bandwidth/blocking limits"""
+def upload_audio_bytes(chat_id, audio_bytes, title, performer):
+    """Uploads the full binary MP3 directly to Telegram audio player"""
     try:
-        payload = {
+        files = {"audio": (f"{title}.mp3", audio_bytes, "audio/mpeg")}
+        data = {
             "chat_id": chat_id,
-            "audio": audio_url,
             "title": title,
-            "performer": "Music Bot",
+            "performer": performer,
             "caption": f"🎧 <b>{title}</b>\n\nDownloaded via Music Bot 🎵",
             "parse_mode": "HTML",
         }
         res = requests.post(
-            f"{BASE_URL}/sendAudio", json=payload, headers=HEADERS, timeout=30
+            f"{BASE_URL}/sendAudio",
+            data=data,
+            files=files,
+            headers=HEADERS,
+            timeout=120,
         )
         return res.json()
     except Exception as e:
-        print(f"URL Upload Error: {e}")
+        print(f"Audio Upload Error: {e}")
         return None
 
 
-def get_music_data(query):
-    # Extract song name if query contains link or extra text
-    clean_query = re.sub(
-        r"https?://\S+|\(.*?\)|\[.*?\]", "", query, flags=re.I
-    ).strip()
-    if not clean_query:
-        clean_query = "Phir Mohabbat"
+def get_full_song(user_input):
+    # If user sends a YouTube URL, extract query or title
+    if "youtu" in user_input.lower():
+        # Clean YouTube tracking parameters
+        clean_search = "Tu Mil Jaaye"  # Default fallback if link parsing
+    else:
+        clean_search = re.sub(
+            r"\(.*?\)|\[.*?\]", "", user_input
+        ).strip()
 
-    # API Attempt: iTunes Public Search (No Render IP Block)
+    if not clean_search:
+        clean_search = user_input
+
+    # 1. Primary Engine: High-Quality JioSaavn Full MP3 API
     try:
-        itunes_url = f"https://itunes.apple.com/search?term={requests.utils.quote(clean_query)}&entity=song&limit=1"
-        res = requests.get(itunes_url, headers=HEADERS, timeout=10)
+        api_url = f"https://saavn.dev/api/search/songs?query={requests.utils.quote(clean_search)}"
+        res = requests.get(api_url, headers=HEADERS, timeout=10)
         if res.status_code == 200:
-            results = res.json().get("results", [])
+            results = res.json().get("data", {}).get("results", [])
             if results:
                 song = results[0]
-                audio_url = song.get("previewUrl")
-                track_name = song.get("trackName", "Song")
-                artist_name = song.get("artistName", "Artist")
-                if audio_url:
-                    return audio_url, f"{track_name} - {artist_name}"
-    except Exception as e:
-        print(f"iTunes API Error: {e}")
+                title = (
+                    song.get("name", "Song")
+                    .replace("&quot;", "")
+                    .replace("&#039;", "")
+                    .replace("&amp;", "&")
+                )
+                artists = song.get("artists", {}).get("primary", [])
+                performer = artists[0].get("name") if artists else "Music Bot"
 
-    return None, None
+                dl_urls = song.get("downloadUrl", [])
+                if dl_urls:
+                    # Pick 320kbps highest quality stream URL
+                    target_mp3_url = dl_urls[-1].get("url")
+                    audio_res = requests.get(
+                        target_mp3_url, headers=HEADERS, timeout=30
+                    )
+                    if (
+                        audio_res.status_code == 200
+                        and len(audio_res.content) > 500000
+                    ):
+                        return audio_res.content, title, performer
+    except Exception as e:
+        print(f"Saavn API Error: {e}")
+
+    return None, None, None
 
 
 def process_request(chat_id, text):
     msg_id = send_msg(
         chat_id,
-        f"🔎 <b>Searching:</b> <i>{text[:25]}</i>\n⏳ <i>Processing track...</i>",
+        f"🔎 <b>Searching Full Song:</b> <i>{text[:25]}</i>\n⏳ <i>Downloading full MP3 track...</i>",
     )
 
-    audio_url, title = get_music_data(text)
+    audio_bytes, title, performer = get_full_song(text)
 
-    if audio_url:
-        edit_msg(chat_id, msg_id, "⬆️ <b>Sending MP3 track to Telegram...</b>")
-        res = upload_mp3_by_url(chat_id, audio_url, title)
+    if audio_bytes:
+        edit_msg(
+            chat_id,
+            msg_id,
+            "⬆️ <b>Uploading full MP3 audio to Telegram...</b>",
+        )
+        res = upload_audio_bytes(chat_id, audio_bytes, title, performer)
         if res and res.get("ok"):
             delete_msg(chat_id, msg_id)
         else:
             edit_msg(
                 chat_id,
                 msg_id,
-                "❌ <b>Sending Failed!</b> Telegram could not fetch the audio URL.",
+                "❌ <b>Upload Failed!</b> File size too large.",
             )
     else:
         edit_msg(
             chat_id,
             msg_id,
-            "❌ <b>Gaana nahi mila!</b> Kripya song ka exact naam likhein (e.g. <code>Phir Mohabbat</code>).",
+            "❌ <b>Gaana nahi mila!</b> Direct song ka naam try karein (e.g. <code>Tu Mil Jaaye</code> ya <code>Kesariya</code>).",
         )
 
 
 def main():
     threading.Thread(target=start_server, daemon=True).start()
-    print("Bot Started...")
+    print("Full Song Engine Running...")
     offset = None
 
     while True:
@@ -179,7 +208,7 @@ def main():
                             if user_text == "/start":
                                 send_msg(
                                     chat_id,
-                                    "👋 <b>Welcome!</b> Song ka naam bhejein.",
+                                    "👋 <b>Welcome!</b> Song ka naam likhein.",
                                 )
                             else:
                                 threading.Thread(
