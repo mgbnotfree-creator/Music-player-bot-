@@ -1,9 +1,9 @@
 import os
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
+import yt_dlp
 
 # -------------------------------------------------------------
 # Configuration
@@ -13,19 +13,17 @@ BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
 # -------------------------------------------------------------
-# Dummy Web Server (Render Active Keep)
+# Dummy Web Server (Render App ko Active rakhne ke liye)
 # -------------------------------------------------------------
 class DummyServerHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"YouTube Media Downloader Active!")
+        self.wfile.write(b"MP3 Music Bot is Running Live!")
 
     def log_message(self, format, *args):
         return
-
 
 def run_dummy_server():
     httpd = HTTPServer(("", 8080), DummyServerHandler)
@@ -33,35 +31,31 @@ def run_dummy_server():
 
 
 # -------------------------------------------------------------
-# Telegram API Helpers
+# Telegram Functions
 # -------------------------------------------------------------
 def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
-        print(f"Error sending message: {e}")
+        print(f"Message Error: {e}")
 
 
-def send_video(chat_id, video_url, title="Downloaded Video"):
-    url = f"{BASE_URL}/sendVideo"
-    payload = {
-        "chat_id": chat_id,
-        "video": video_url,
-        "caption": f"🎬 <b>{title}</b>\n\nDownloaded via Music Bot 🚀",
-        "parse_mode": "HTML",
-    }
+def send_audio(chat_id, file_path, title):
+    url = f"{BASE_URL}/sendAudio"
     try:
-        return requests.post(url, json=payload, timeout=25).json()
+        with open(file_path, "rb") as audio:
+            files = {"audio": audio}
+            data = {
+                "chat_id": chat_id,
+                "title": title,
+                "caption": f"🎧 <b>{title}</b>\n\n🎵 Downloaded via Music Bot",
+                "parse_mode": "HTML",
+            }
+            requests.post(url, data=data, files=files)
     except Exception as e:
-        print(f"Error sending video: {e}")
-        return None
+        print(f"Audio Send Error: {e}")
 
 
 def get_updates(offset=None):
@@ -77,90 +71,70 @@ def get_updates(offset=None):
 
 
 # -------------------------------------------------------------
-# Fast Media Extractor (Cobalt API)
+# MP3 / Audio Downloader Logic
 # -------------------------------------------------------------
-def get_media_url_cobalt(youtube_url):
-    api_url = "https://api.cobalt.tools/api/json"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "url": youtube_url,
-        "vQuality": "360",  # Low size format for fast Telegram send
-        "isAudioOnly": False,
-    }
+def download_and_send_song(chat_id, query):
+    send_message(chat_id, f"🔎 <b>Searching & Downloading:</b> {query}\n⏳ <i>Kripya wait karein...</i>")
 
-    try:
-        res = requests.post(api_url, json=payload, headers=headers, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("status") in ["stream", "picker", "redirect"]:
-                return data.get("url")
-    except Exception as e:
-        print(f"Cobalt Main API Error: {e}")
-
-    # Fallback Cobalt Instance
-    try:
-        alt_api = "https://cobalt.qil.dev/api/json"
-        res = requests.post(alt_api, json=payload, headers=headers, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("url"):
-                return data.get("url")
-    except Exception as e:
-        print(f"Cobalt Fallback Error: {e}")
-
-    return None
-
-
-# -------------------------------------------------------------
-# Message Processor
-# -------------------------------------------------------------
-def download_media_process(chat_id, youtube_url):
-    send_message(chat_id, "⏳ <b>Processing Media (Fast Server)...</b>")
-
-    direct_url = get_media_url_cobalt(youtube_url)
-
-    if direct_url:
-        send_message(
-            chat_id, "⬇️ <b>Telegram par video send kar rahe hain...</b>"
-        )
-        result = send_video(chat_id, direct_url, title="YouTube Media")
-
-        # If direct video upload fails on Telegram
-        if not result or not result.get("ok"):
-            send_message(
-                chat_id,
-                f"🎬 <b>Direct Stream / Download Link:</b>\n\n"
-                f"👉 <a href='{direct_url}'>Click Here to Download Media</a>\n\n"
-                f"💡 <i>Tip: Telegram limit ki wajah se link par click karke direct download karein!</i>",
-            )
+    # Agar link nahi hai, toh YouTube par gaane ka naam search karega
+    if not (query.startswith("http://") or query.startswith("https://")):
+        search_target = f"ytsearch1:{query}"
     else:
-        send_message(
-            chat_id,
-            "❌ <b>Error:</b> Video extract nahi ho payi. Kuch der baad try karein.",
-        )
+        search_target = query
+
+    # Sirf Audio (M4A/MP3) download karega, Video nahi. 
+    # M4A format Telegram par direct as a Music Play hota hai.
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'outtmpl': 'downloaded_song.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(search_target, download=True)
+            
+            if 'entries' in info:
+                info = info['entries'][0]
+
+            title = info.get('title', 'Unknown Song')
+
+            # Find the downloaded file
+            filename = None
+            for f in os.listdir("."):
+                if f.startswith("downloaded_song."):
+                    filename = f
+                    break
+
+            if filename and os.path.exists(filename):
+                send_message(chat_id, "⬆️ <b>Telegram par Song upload ho raha hai...</b>")
+                send_audio(chat_id, filename, title)
+                os.remove(filename)  # Delete file after sending
+            else:
+                send_message(chat_id, "❌ Song file process nahi ho saki.")
+
+    except Exception as e:
+        print(f"Download Error: {e}")
+        send_message(chat_id, "❌ <b>Error:</b> Gaana download nahi ho paya. Koi dusra naam try karein.")
 
 
+# -------------------------------------------------------------
+# Main Message Handler
+# -------------------------------------------------------------
 def handle_message(chat_id, text):
     if text == "/start":
         send_message(
             chat_id,
-            "👋 <b>Welcome to Fast Media Downloader Bot!</b>\n\n"
-            "Koi bhi YouTube, Instagram, ya Song Link yahan paste karein!",
+            "👋 <b>Welcome to MP3 Music Bot! 🎶</b>\n\n"
+            "Aap kisi bhi gaane ka <b>Naam</b> likh kar bhej sakte hain ya YouTube Link paste kar sakte hain.\n\n"
+            "<i>Example: Tere Sang Yaara</i>",
         )
         return
 
-    if "youtube.com" in text or "youtu.be" in text or "http" in text:
-        urls = re.findall(r"(https?://[^\s]+)", text)
-        if urls:
-            threading.Thread(
-                target=download_media_process, args=(chat_id, urls[0])
-            ).start()
-            return
-
-    send_message(chat_id, "⚠️ Please ek valid **Video URL** bhejein!")
+    # Background me run karega taaki bot hang na ho
+    threading.Thread(target=download_and_send_song, args=(chat_id, text)).start()
 
 
 # -------------------------------------------------------------
@@ -168,7 +142,7 @@ def handle_message(chat_id, text):
 # -------------------------------------------------------------
 def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    print("Bot started...")
+    print("MP3 Bot is Running...")
     offset = None
 
     while True:
@@ -183,7 +157,6 @@ def main():
                     )
         time.sleep(1)
 
-
 if __name__ == "__main__":
     main()
-        
+    
